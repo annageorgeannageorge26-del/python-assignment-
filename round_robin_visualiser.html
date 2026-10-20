@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Round Robin Visualiser</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1b2430; --mute:#667085; --line:#dfe3e8; --accent:#0f766e; --cs:#9ca3af; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#10151c; --card:#18202a; --ink:#e6eaf0; --mute:#93a0b2; --line:#2a3544; --accent:#2dd4bf; --cs:#6b7280; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--ink); font:15px/1.5 system-ui, sans-serif; }
+  main { max-width:1000px; margin:auto; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  h2 { font-size:16px; margin:0 0 10px; }
+  p.sub { color:var(--mute); margin:0 0 14px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:14px; }
+  table { border-collapse:collapse; width:100%; }
+  th, td { padding:6px 8px; text-align:left; border-bottom:1px solid var(--line); }
+  th { color:var(--mute); font-weight:500; font-size:13px; }
+  input, select, button { font:inherit; color:inherit; background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:5px 8px; }
+  input[type=number] { width:80px; } input[type=text] { width:70px; }
+  button { cursor:pointer; } button:hover { border-color:var(--accent); }
+  button.main { background:var(--accent); color:#fff; border-color:var(--accent); }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+  .row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:10px; }
+  .row label { display:flex; gap:6px; align-items:center; }
+  .scroll { overflow-x:auto; }
+  .clock { font-size:34px; font-weight:700; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:700px) { .grid { grid-template-columns:1fr; } }
+  .cpu { padding:10px; border-radius:6px; border:2px dashed var(--line); font-weight:600; min-height:44px; }
+  .chip { display:inline-block; padding:2px 10px; border-radius:12px; color:#fff; margin:2px 4px 2px 0; font-weight:600; }
+  .bar { display:flex; align-items:center; gap:8px; margin:4px 0; }
+  .bar .name { width:34px; font-weight:600; }
+  .bar .track { flex:1; height:14px; background:var(--bg); border-radius:7px; overflow:hidden; }
+  .bar .fill { height:100%; transition:width .2s; }
+  .gantt { display:flex; padding-bottom:4px; }
+  .cell { width:34px; flex:none; text-align:center; font-size:12px; }
+  .cell .box { height:34px; line-height:34px; color:#fff; font-weight:600; border-right:1px solid rgba(255,255,255,.4); }
+  .cell.future .box { background:var(--line) !important; color:transparent; }
+  .cell.now .box { outline:3px solid var(--ink); outline-offset:-3px; }
+  .cell .tick { color:var(--mute); text-align:left; margin-left:-4px; }
+  .cell.cs .box { background:repeating-linear-gradient(45deg,var(--cs),var(--cs) 4px,transparent 4px,transparent 8px); color:var(--ink); }
+  .win { color:var(--accent); font-weight:700; }
+  #events { min-height:24px; color:var(--mute); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Round Robin Scheduling Visualiser</h1>
+  <p class="sub">Edit the processes, pick a time quantum, then press Play or step through one millisecond at a time.</p>
+
+  <section>
+    <h2>1. Input</h2>
+    <div class="row" style="margin:0 0 10px">
+      <button onclick="loadPreset(1)">Load Activity 1 (SDG)</button>
+      <button onclick="loadPreset(2)">Load Activity 2 (climate)</button>
+    </div>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Process</th><th>Arrival (ms)</th><th>Burst (ms)</th><th></th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div class="row">
+      <button onclick="addProc()">+ Add process</button>
+      <label>Time quantum <input type="number" id="q" min="1" value="2"></label>
+      <label>Context switch overhead (ms) <input type="number" id="oh" min="0" value="0"></label>
+      <label>Compare with quantum <input type="number" id="q2" min="1" value="3"></label>
+    </div>
+  </section>
+
+  <section>
+    <h2>2. Step-by-step simulation</h2>
+    <div class="row" style="margin:0 0 12px">
+      <button onclick="go(-1)" aria-label="Back one ms">◀ Back</button>
+      <button class="main" id="play" onclick="togglePlay()">▶ Play</button>
+      <button onclick="go(1)">Step ▶</button>
+      <button onclick="reset()">Reset</button>
+      <label>Speed
+        <select id="speed" onchange="if(timer){togglePlay();togglePlay()}">
+          <option value="1000">1 s per ms</option><option value="500" selected>0.5 s</option><option value="200">0.2 s</option>
+        </select>
+      </label>
+      <input type="range" id="slider" min="0" value="0" style="flex:1;min-width:140px" oninput="t=+this.value;render()" aria-label="Time">
+    </div>
+    <div class="grid">
+      <div>
+        <div class="clock" id="clock">0 ms</div>
+        <div class="cpu" id="cpu"></div>
+        <p style="margin:10px 0 4px"><b>Ready queue</b> (front → back)</p>
+        <div id="queue"></div>
+        <p style="margin:10px 0 0"><b>What happened</b></p>
+        <div id="events"></div>
+      </div>
+      <div>
+        <b>Remaining burst time</b>
+        <div id="bars"></div>
+      </div>
+    </div>
+    <p style="margin:14px 0 6px"><b>Gantt chart</b> (one box = 1 ms, grey striped = context switch)</p>
+    <div class="scroll"><div class="gantt" id="gantt"></div></div>
+  </section>
+
+  <section>
+    <h2>3. Results</h2>
+    <div class="scroll"><table id="results"></table></div>
+    <p id="summary" style="margin-bottom:0"></p>
+  </section>
+
+  <section>
+    <h2>4. Compare two time quanta</h2>
+    <div class="scroll"><table id="compare"></table></div>
+  </section>
+</main>
+
+<script>
+const COLORS = ['#2563eb','#059669','#d97706','#dc2626','#7c3aed','#db2777','#0d9488','#ea580c'];
+const $ = id => document.getElementById(id);
+let procs = [], sim = null, t = 0, timer = null;
+
+const PRESETS = {
+  1: { q:2, oh:0, q2:3, p:[['P1',0,5],['P2',1,3],['P3',2,4],['P4',3,2]] },
+  2: { q:2, oh:1, q2:4, p:[['P1',0,5],['P2',1,4],['P3',2,3],['P4',3,2]] }
+};
+
+/* ---------- The scheduler: runs one millisecond per loop pass ---------- */
+function simulate(procs, q, oh) {
+  const n = procs.length;
+  const rem = procs.map(p => p.burst);          // remaining burst of each process
+  const start = Array(n).fill(null);            // first time each process got the CPU
+  const ct = Array(n).fill(0);                  // completion times
+  let queue = [], cur = null, used = 0;         // ready queue, running process, ms used of its quantum
+  let cs = 0, pend = null, last = null;         // context-switch ms left, process we switch to, last dispatched
+  let switches = 0, done = 0, log = [];
+
+  for (let time = 0; done < n && time < 5000; time++) {
+    const ev = [];
+    // 1. new arrivals join the queue
+    procs.forEach((p, i) => { if (p.arrival === time) { queue.push(i); ev.push(p.name + ' arrives'); } });
+    // 2. running process finished its quantum? -> back of queue
+    if (cur !== null && rem[cur] > 0 && used === q) {
+      queue.push(cur); ev.push(procs[cur].name + ' used its quantum, goes to back of queue');
+    }
+    if (cur !== null && (rem[cur] === 0 || used === q)) cur = null;
+    // 3. CPU free: take the front of the queue
+    if (cur === null && cs === 0 && queue.length) {
+      const nx = queue.shift();
+      if (last !== null && last !== nx) {         // changing process = context switch
+        switches++;
+        if (oh > 0) { cs = oh; pend = nx; ev.push('Context switch to ' + procs[nx].name); }
+      }
+      if (cs === 0) { cur = nx; used = 0; ev.push('CPU picks ' + procs[nx].name); }
+      last = nx;
+    }
+    // 4. spend this millisecond
+    let type = 'idle', pid = null;
+    if (cs > 0) {
+      type = 'cs'; pid = pend; cs--;
+      if (cs === 0) { cur = pend; used = 0; }
+    } else if (cur !== null) {
+      type = 'run'; pid = cur;
+      if (start[cur] === null) start[cur] = time;
+      rem[cur]--; used++;
+      if (rem[cur] === 0) { ct[cur] = time + 1; done++; ev.push(procs[cur].name + ' finishes'); }
+    } else ev.push('CPU idle');
+    log.push({ type, pid, queue: [...queue], rem: [...rem], ev });
+  }
+
+  // metrics
+  const rows = procs.map((p, i) => {
+    const tat = ct[i] - p.arrival;
+    return { name: p.name, at: p.arrival, bt: p.burst, ct: ct[i], tat, wt: tat - p.burst, rt: start[i] - p.arrival };
+  });
+  const avg = k => rows.reduce((s, r) => s + r[k], 0) / n;
+  const busy = procs.reduce((s, p) => s + p.burst, 0);
+  return { log, rows, switches, q, oh, total: log.length,
+           avgTat: avg('tat'), avgWt: avg('wt'), avgRt: avg('rt'),
+           overhead: switches * oh, eff: busy / log.length * 100 };
+}
+
+/* ---------- Reading input ---------- */
+function loadPreset(k) {
+  const d = PRESETS[k];
+  procs = d.p.map(([name, arrival, burst]) => ({ name, arrival, burst }));
+  $('q').value = d.q; $('oh').value = d.oh; $('q2').value = d.q2;
+  drawRows(); run();
+}
+function addProc() {
+  procs.push({ name: 'P' + (procs.length + 1), arrival: 0, burst: 1 });
+  drawRows(); run();
+}
+function delProc(i) { procs.splice(i, 1); drawRows(); run(); }
+function drawRows() {
+  $('rows').innerHTML = procs.map((p, i) => `<tr>
+    <td><input type="text" value="${p.name}" data-i="${i}" data-f="name"></td>
+    <td><input type="number" min="0" value="${p.arrival}" data-i="${i}" data-f="arrival"></td>
+    <td><input type="number" min="1" value="${p.burst}" data-i="${i}" data-f="burst"></td>
+    <td><button onclick="delProc(${i})" aria-label="Remove ${p.name}">✕</button></td></tr>`).join('');
+}
+$('rows').addEventListener('input', e => {
+  const { i, f } = e.target.dataset;
+  procs[i][f] = f === 'name' ? e.target.value || 'P' + (+i + 1) : Math.max(f === 'burst' ? 1 : 0, Math.floor(+e.target.value || 0));
+  run();
+});
+['q', 'oh', 'q2'].forEach(id => $(id).addEventListener('input', run));
+const num = (id, min) => Math.max(min, Math.floor(+$(id).value || min));
+
+/* ---------- Run and draw ---------- */
+function run() {
+  if (!procs.length) return;
+  sim = simulate(procs, num('q', 1), num('oh', 0));
+  t = Math.min(t, sim.total);
+  $('slider').max = sim.total;
+  renderResults(); renderCompare(); render();
+}
+
+function render() {
+  $('slider').value = t;
+  $('clock').textContent = t + ' ms';
+  const e = t > 0 ? sim.log[t - 1] : null;
+  const cpu = $('cpu');
+  if (!e) cpu.textContent = 'Not started';
+  else if (e.type === 'run') { cpu.textContent = 'CPU running ' + procs[e.pid].name; cpu.style.borderColor = COLORS[e.pid % 8]; }
+  else if (e.type === 'cs') { cpu.textContent = 'Context switch (saving and loading state)'; cpu.style.borderColor = 'var(--cs)'; }
+  else { cpu.textContent = 'CPU idle'; cpu.style.borderColor = 'var(--line)'; }
+  if (t === sim.total) cpu.textContent = 'All processes finished at ' + t + ' ms';
+
+  const chip = i => `<span class="chip" style="background:${COLORS[i % 8]}">${procs[i].name}</span>`;
+  $('queue').innerHTML = e && e.queue.length ? e.queue.map(chip).join('') : '<span style="color:var(--mute)">empty</span>';
+  $('events').textContent = e ? e.ev.join(' · ') || procs[e.pid].name + ' keeps running' : 'Press Play or Step to begin.';
+
+  const rem = e ? e.rem : procs.map(p => p.burst);
+  $('bars').innerHTML = procs.map((p, i) => `<div class="bar"><span class="name">${p.name}</span>
+    <div class="track"><div class="fill" style="width:${rem[i] / p.burst * 100}%;background:${COLORS[i % 8]}"></div></div>
+    <span>${rem[i]}/${p.burst}</span></div>`).join('');
+
+  $('gantt').innerHTML = sim.log.map((c, k) => {
+    const label = c.type === 'run' ? procs[c.pid].name : c.type === 'cs' ? 'CS' : '–';
+    const color = c.type === 'run' ? COLORS[c.pid % 8] : 'var(--cs)';
+    return `<div class="cell ${c.type === 'cs' ? 'cs' : ''} ${k >= t ? 'future' : ''} ${k === t - 1 ? 'now' : ''}">
+      <div class="box" style="background:${color}">${label}</div><div class="tick">${k}</div></div>`;
+  }).join('') + `<div class="cell"><div class="tick" style="margin-top:34px">${sim.total}</div></div>`;
+}
+
+function renderResults() {
+  const s = sim;
+  $('results').innerHTML = `<tr><th>Process</th><th>Arrival</th><th>Burst</th><th>Completion</th><th>Turnaround</th><th>Waiting</th><th>Response</th></tr>` +
+    s.rows.map(r => `<tr><td>${r.name}</td><td>${r.at}</td><td>${r.bt}</td><td>${r.ct}</td><td>${r.tat}</td><td>${r.wt}</td><td>${r.rt}</td></tr>`).join('') +
+    `<tr><td><b>Average</b></td><td></td><td></td><td></td><td><b>${s.avgTat.toFixed(2)}</b></td><td><b>${s.avgWt.toFixed(2)}</b></td><td><b>${s.avgRt.toFixed(2)}</b></td></tr>`;
+  $('summary').innerHTML = `Context switches: <b>${s.switches}</b> · Total overhead: <b>${s.overhead} ms</b> · Total time: <b>${s.total} ms</b> · CPU efficiency: <b>${s.eff.toFixed(1)}%</b>
+    <br><small style="color:var(--mute)">Turnaround = completion − arrival · Waiting = turnaround − burst · Response = first CPU time − arrival · Efficiency = useful time ÷ total time</small>`;
+}
+
+function renderCompare() {
+  const a = sim, b = simulate(procs, num('q2', 1), num('oh', 0));
+  const metrics = [                          // [label, key, digits, lower is better?]
+    ['Average turnaround time', 'avgTat', 2, true], ['Average waiting time', 'avgWt', 2, true],
+    ['Average response time', 'avgRt', 2, true], ['Context switches', 'switches', 0, true],
+    ['Total overhead (ms)', 'overhead', 0, true], ['Total time (ms)', 'total', 0, true],
+    ['CPU efficiency (%)', 'eff', 1, false]];
+  $('compare').innerHTML = `<tr><th>Metric</th><th>Quantum = ${a.q} ms</th><th>Quantum = ${b.q} ms</th><th>Better</th></tr>` +
+    metrics.map(([label, k, d, low]) => {
+      const x = +a[k].toFixed(d), y = +b[k].toFixed(d);
+      const win = x === y ? 'Tie' : (x < y) === low ? 'Q = ' + a.q : 'Q = ' + b.q;
+      return `<tr><td>${label}</td><td>${x.toFixed(d)}</td><td>${y.toFixed(d)}</td><td class="win">${win}</td></tr>`;
+    }).join('');
+}
+
+/* ---------- Player controls ---------- */
+function go(d) { t = Math.max(0, Math.min(sim.total, t + d)); render(); }
+function reset() { if (timer) togglePlay(); t = 0; render(); }
+function togglePlay() {
+  if (timer) { clearInterval(timer); timer = null; $('play').textContent = '▶ Play'; return; }
+  if (t >= sim.total) t = 0;
+  $('play').textContent = '❚❚ Pause';
+  timer = setInterval(() => { go(1); if (t >= sim.total) togglePlay(); }, +$('speed').value);
+}
+
+loadPreset(1);
+</script>
+</body>
+</html>
