@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>OS Scheduling Visualizer</title>
+<style>
+:root{--bg:#fafaf7;--card:#fff;--tx:#1d1d1b;--mut:#6b6b66;--bd:#dcdcd4;--ac:#1f6feb;--ok:#1a7f4b;--bad:#c0392b;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#16171a;--card:#202226;--tx:#ececea;--mut:#9a9a95;--bd:#3a3c42;--ac:#5b9bff;--ok:#4cc38a;--bad:#ff7b6b;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#16171a;--card:#202226;--tx:#ececea;--mut:#9a9a95;--bd:#3a3c42;--ac:#5b9bff;--ok:#4cc38a;--bad:#ff7b6b;color-scheme:dark}
+*{box-sizing:border-box}html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:980px;margin:0 auto;padding:16px}
+h1{font-size:22px;margin:4px 0}p.s{color:var(--mut);margin:0 0 12px}
+.tabs{display:flex;gap:8px;margin:12px 0}
+button{font:inherit;border:1px solid var(--bd);background:var(--card);color:var(--tx);padding:6px 12px;border-radius:8px;cursor:pointer}
+button.on,button.p{background:var(--ac);color:#fff;border-color:var(--ac)}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;margin-bottom:12px}
+.row{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end}
+label{display:flex;flex-direction:column;font-size:13px;color:var(--mut);gap:3px}
+input,select,textarea{font:inherit;background:var(--bg);color:var(--tx);border:1px solid var(--bd);border-radius:6px;padding:5px 8px}
+textarea{width:230px;height:92px;font-family:ui-monospace,monospace;font-size:13px}
+.err{color:var(--bad);min-height:20px;font-size:14px}
+.ctl{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0}
+.ov{overflow-x:auto}svg{display:block;max-width:100%;height:auto}svg text{fill:var(--tx);font-size:11px}
+.kv{font-variant-numeric:tabular-nums}.kv b{color:var(--ac)}
+table{border-collapse:collapse;width:100%;font-size:14px}th,td{border-bottom:1px solid var(--bd);padding:4px 8px;text-align:center}
+.hid{display:none}
+</style></head><body><main>
+<h1>OS Scheduling Visualizer</h1>
+<p class="s">An open learning aid for disk and CPU scheduling. Use Next/Previous to step, or auto-play.</p>
+<div class="tabs"><button id="tA" class="on">Part A: Disk</button><button id="tB">Part B: CPU</button></div>
+
+<section id="A">
+<div class="card"><div class="row">
+<label>Cylinders<input id="size" type="number" value="200" min="2" style="width:90px"></label>
+<label>Head<input id="head" type="number" value="50" style="width:80px"></label>
+<label>Direction<select id="dir"><option value="1">Towards high</option><option value="-1">Towards low</option></select></label>
+<label>Algorithm<select id="alg"><option>FCFS</option><option>SSTF</option><option>SCAN</option><option>C-SCAN</option><option>LOOK</option></select></label>
+<label>Requests (comma separated)<input id="reqs" value="82,170,43,140,24,16,190" style="width:260px"></label>
+<button class="p" id="runA">Run</button></div><div class="err" id="eA"></div></div>
+<div class="card"><div class="ctl" id="cA"></div><div class="ov" id="gA"></div>
+<div class="kv" id="iA"></div></div>
+<div class="card"><b>Comparison (same input, all algorithms)</b><div class="ov" id="bar"></div></div>
+</section>
+
+<section id="B" class="hid">
+<div class="card"><div class="row">
+<label>Processes (id arrival burst priority; lower number = higher priority)<textarea id="procs">P1 0 8 2
+P2 1 4 1
+P3 2 9 3
+P4 3 5 2</textarea></label>
+<label>Algorithm<select id="calg"><option value="FCFS">FCFS</option><option value="SJF">SJF (non-preemptive)</option><option value="SRTF">SRTF (preemptive SJF)</option><option value="Priority">Priority (non-preemptive)</option><option value="RR">Round Robin</option></select></label>
+<label>Time quantum (Round Robin)<input id="tq" type="number" value="3" min="1" style="width:80px"></label>
+<button class="p" id="runB">Run</button></div><div class="err" id="eB"></div></div>
+<div class="card"><div class="ctl" id="cB"></div><div class="ov" id="gB"></div><div id="iB"></div></div>
+</section>
+
+<script>
+const $=id=>document.getElementById(id);
+const NS=(t,a,x)=>`<${t} ${Object.entries(a).map(([k,v])=>k+'="'+v+'"').join(' ')}>${x||''}</${t}>`;
+$('tA').onclick=()=>tab('A');$('tB').onclick=()=>tab('B');
+function tab(t){['A','B'].forEach(k=>{$(k).classList.toggle('hid',k!==t);$('t'+k).classList.toggle('on',k===t)});stopAll()}
+let timers={};
+function stopAll(){Object.values(timers).forEach(clearInterval);timers={};document.querySelectorAll('.pl').forEach(b=>b.textContent='▶ Play')}
+/* generic stepper */
+function stepper(box,key,getMax,draw){
+ box.innerHTML='<button class="pv">◀ Prev</button><button class="nx">Next ▶</button><button class="pl p">▶ Play</button><button class="rs">Reset</button><label style="flex-direction:row;align-items:center;gap:6px">Speed<input class="sp" type="range" min="150" max="1500" value="700" style="padding:0"></label>';
+ const S={k:0};const go=k=>{S.k=Math.max(0,Math.min(getMax(),k));draw(S.k)};
+ const q=c=>box.querySelector(c);
+ q('.pv').onclick=()=>go(S.k-1);q('.nx').onclick=()=>go(S.k+1);q('.rs').onclick=()=>{stop();go(0)};
+ const stop=()=>{clearInterval(timers[key]);delete timers[key];q('.pl').textContent='▶ Play'};
+ q('.pl').onclick=()=>{if(timers[key]){stop();return}
+  if(S.k>=getMax())go(0);q('.pl').textContent='⏸ Pause';
+  const tick=()=>{if(S.k>=getMax()){stop();return}go(S.k+1)};
+  timers[key]=setInterval(tick,+q('.sp').value);
+  q('.sp').oninput=()=>{if(timers[key]){clearInterval(timers[key]);timers[key]=setInterval(tick,+q('.sp').value)}}};
+ go(0);return go}
+
+/* ---------- Part A: disk ---------- */
+function disk(alg,head,reqs,size,dir){
+ const P=[{c:head,r:0}],add=(c,r)=>P.push({c,r}),end=size-1;
+ const up=reqs.filter(x=>x>=head).sort((a,b)=>a-b),dn=reqs.filter(x=>x<head).sort((a,b)=>b-a);
+ const R=a=>a.forEach(c=>add(c,1));
+ if(alg=='FCFS')R(reqs);
+ else if(alg=='SSTF'){let r=reqs.slice(),h=head;while(r.length){let bi=0;r.forEach((x,i)=>{if(Math.abs(x-h)<Math.abs(r[bi]-h))bi=i});h=r[bi];add(h,1);r.splice(bi,1)}}
+ else if(alg=='SCAN'){if(dir>0){R(up);add(end,0);R(dn)}else{R(dn);add(0,0);R(up.slice().reverse().reverse())}}
+ else if(alg=='C-SCAN'){if(dir>0){R(up);add(end,0);add(0,0);R(dn.slice().reverse())}else{R(dn);add(0,0);add(end,0);R(up.slice().reverse())}}
+ else{if(dir>0){R(up);R(dn)}else{R(dn);R(up)}}
+ const out=[P[0]];P.slice(1).forEach(p=>{const l=out[out.length-1];if(!(l.c==p.c&&!p.r))out.push(p)});
+ let tot=0;for(let i=1;i<out.length;i++)tot+=Math.abs(out[i].c-out[i-1].c);
+ return{P:out,tot,seq:out.slice(1).filter(p=>p.r).map(p=>p.c)}}
+let dState=null,gA=null;
+$('runA').onclick=runA;$('alg').onchange=()=>{if(dState)runA()};
+function parseA(){
+ const size=+$('size').value,head=+$('head').value,dir=+$('dir').value;
+ const toks=$('reqs').value.split(/[,\s]+/).filter(Boolean),reqs=toks.map(Number);
+ if(!Number.isInteger(size)||size<2)return'Disk size must be a whole number ≥ 2.';
+ if(!Number.isInteger(head)||head<0||head>=size)return`Head position must be an integer between 0 and ${size-1}.`;
+ if(!reqs.length)return'Enter at least one request.';
+ const bad=toks.find((t,i)=>!Number.isInteger(reqs[i])||reqs[i]<0||reqs[i]>=size);
+ if(bad!==undefined)return`Invalid request "${bad}": must be an integer in 0–${size-1}.`;
+ return{size,head,dir,reqs}}
+function runA(){
+ stopAll();const v=parseA();$('eA').textContent=typeof v=='string'?v:'';if(typeof v=='string')return;
+ dState={v,alg:$('alg').value,res:disk($('alg').value,v.head,v.reqs,v.size,v.dir)};
+ gA=stepper($('cA'),'A',()=>dState.res.P.length-1,drawA);drawBar()}
+function drawA(k){
+ const{v,alg,res}=dState,n=res.P.length,W=720,H=340,L=46,T=24,B=16,
+ X=i=>L+(n>1?i*(W-L-20)/(n-1):0),Y=c=>T+c/(v.size-1)*(H-T-B);
+ let s='';[0,.25,.5,.75,1].forEach(f=>{const c=Math.round(f*(v.size-1));s+=NS('line',{x1:L,x2:W-10,y1:Y(c),y2:Y(c),stroke:'var(--bd)'})+NS('text',{x:4,y:Y(c)+4},c)});
+ const pts=res.P.slice(0,k+1).map((p,i)=>X(i)+','+Y(p.c)).join(' ');
+ s+=NS('polyline',{points:pts,fill:'none',stroke:'var(--ac)','stroke-width':2});
+ res.P.forEach((p,i)=>{if(i>k)return;s+=NS('circle',{cx:X(i),cy:Y(p.c),r:i==k?6:4,fill:i==0?'var(--ok)':p.r?'var(--ac)':'var(--mut)'})+NS('text',{x:X(i)+6,y:Y(p.c)-7},p.c)});
+ s+=NS('text',{x:L,y:12},`${alg} — seek graph (x = order of service, y = cylinder)`);
+ $('gA').innerHTML=`<svg viewBox="0 0 ${W} ${H}" width="${W}">${s}</svg>`;
+ let mv=0;for(let i=1;i<=k;i++)mv+=Math.abs(res.P[i].c-res.P[i-1].c);
+ $('iA').innerHTML=`Step <b>${k}</b>/${n-1} · head at <b>${res.P[k].c}</b> · movement so far <b>${mv}</b> · <b>Total ${res.tot}</b><br>Service sequence: ${res.seq.join(' → ')}`+(alg.includes('SCAN')&&alg!='LOOK'?'<br><small style="color:var(--mut)">Grey dots = disk edge visits (the C-SCAN return jump is counted in the total).</small>':'')}
+function drawBar(){
+ const{v}=dState,A=['FCFS','SSTF','SCAN','C-SCAN','LOOK'],r=A.map(a=>disk(a,v.head,v.reqs,v.size,v.dir).tot),m=Math.max(...r),W=620,H=230;
+ let s='';r.forEach((t,i)=>{const h=t/m*(H-60),x=40+i*115;
+  s+=NS('rect',{x,y:H-30-h,width:70,height:h,rx:4,fill:t==Math.min(...r)?'var(--ok)':'var(--ac)'})+NS('text',{x:x+35,y:H-34-h,'text-anchor':'middle'},t)+NS('text',{x:x+35,y:H-12,'text-anchor':'middle'},A[i])});
+ $('bar').innerHTML=`<svg viewBox="0 0 ${W} ${H}" width="${W}">${s}</svg><small style="color:var(--mut)">Total head movement in cylinders; green = lowest.</small>`}
+
+/* ---------- Part B: CPU ---------- */
+function parseB(){
+ const rows=$('procs').value.split('\n').map(l=>l.trim()).filter(Boolean),P=[],ids=new Set();
+ for(const [i,l] of rows.entries()){const f=l.split(/[\s,]+/);
+  if(f.length<3)return`Line ${i+1}: need "id arrival burst [priority]".`;
+  const a=+f[1],b=+f[2],pr=f[3]===undefined?0:+f[3];
+  if(!Number.isInteger(a)||a<0)return`Line ${i+1}: arrival must be an integer ≥ 0.`;
+  if(!Number.isInteger(b)||b<1)return`Line ${i+1}: burst must be an integer ≥ 1.`;
+  if(ids.has(f[0]))return`Duplicate process ID ${f[0]}.`;ids.add(f[0]);P.push({id:f[0],a,b,pr,rem:b})}
+ if(!P.length)return'Enter at least one process.';
+ if($('calg').value=='RR'&&!(+$('tq').value>=1))return'Time quantum must be ≥ 1.';
+ return P}
+function cpu(alg,P,q){
+ const G=[],push=(id,s,e)=>{const l=G[G.length-1];if(l&&l.id==id&&l.e==s&&alg!='RR')l.e=e;else G.push({id,s,e})},fin={};
+ let t=0;
+ if(['FCFS','SJF','Priority'].includes(alg)){let left=P.slice();while(left.length){let rd=left.filter(p=>p.a<=t);
+  if(!rd.length){const na=Math.min(...left.map(p=>p.a));push('Idle',t,na);t=na;continue}
+  rd.sort((x,y)=>(alg=='FCFS'?0:alg=='SJF'?x.b-y.b:x.pr-y.pr)||x.a-y.a);const p=rd[0];push(p.id,t,t+p.b);t+=p.b;fin[p.id]=t;left=left.filter(x=>x!==p)}}
+ else if(alg=='SRTF'){let left=P.map(p=>({...p}));while(left.length){let rd=left.filter(p=>p.a<=t);
+  if(!rd.length){const na=Math.min(...left.map(p=>p.a));push('Idle',t,na);t=na;continue}
+  rd.sort((x,y)=>x.rem-y.rem||x.a-y.a);const p=rd[0],nx=left.filter(x=>x.a>t).map(x=>x.a),run=Math.min(p.rem,nx.length?Math.min(...nx)-t:Infinity);
+  push(p.id,t,t+run);t+=run;p.rem-=run;if(!p.rem){fin[p.id]=t;left=left.filter(x=>x!==p)}}}
+ else{const S=P.slice().sort((x,y)=>x.a-y.a),Q=[];let nx=0,done=0;
+  const arr=()=>{while(nx<S.length&&S[nx].a<=t)Q.push(S[nx++])};
+  while(done<P.length){arr();if(!Q.length){push('Idle',t,S[nx].a);t=S[nx].a;continue}
+   const p=Q.shift(),r=Math.min(q,p.rem);push(p.id,t,t+r);t+=r;p.rem-=r;arr();
+   if(p.rem>0)Q.push(p);else{fin[p.id]=t;done++}}}
+ const M=P.map(p=>{const tat=fin[p.id]-p.a;return{id:p.id,a:p.a,b:p.b,pr:p.pr,ct:fin[p.id],tat,wt:tat-p.b}});
+ return{G,M}}
+let cState=null;
+$('runB').onclick=()=>{stopAll();const P=parseB();$('eB').textContent=typeof P=='string'?P:'';if(typeof P=='string')return;
+ const alg=$('calg').value;cState=cpu(alg,P,+$('tq').value);cState.alg=alg;
+ stepper($('cB'),'B',()=>cState.G.length,drawB)};
+const NAMES={FCFS:'FCFS',SJF:'SJF (non-preemptive)',SRTF:'SRTF',Priority:'Priority (non-preemptive)',RR:'Round Robin'};
+const COL=['#1f6feb','#1a7f4b','#d98e04','#a23fc4','#c0392b','#0f9db5','#7a8b00','#e0568c'];
+function drawB(k){
+ const{G,M,alg}=cState,T=G[G.length-1].e,W=720,u=(W-30)/T,ids=[...new Set(M.map(m=>m.id))];
+ let s=NS('text',{x:4,y:12},`${NAMES[alg]} Gantt chart`);
+ G.forEach((g,i)=>{if(i>=k)return;const c=g.id=='Idle'?'var(--bd)':COL[ids.indexOf(g.id)%COL.length];
+  s+=NS('rect',{x:10+g.s*u,y:24,width:(g.e-g.s)*u,height:38,fill:c,stroke:'var(--bg)'})+NS('text',{x:10+(g.s+g.e)/2*u,y:48,'text-anchor':'middle',style:'fill:#fff;font-weight:600'},g.id=='Idle'?'':g.id)
+  +NS('text',{x:10+g.s*u,y:78,'text-anchor':'middle'},g.s)+(i==k-1?NS('text',{x:10+g.e*u,y:78,'text-anchor':'middle'},g.e):'')});
+ $('gB').innerHTML=`<svg viewBox="0 0 ${W} 90" width="${W}">${s}</svg>`;
+ const all=k>=G.length,avg=f=>(M.reduce((a,m)=>a+m[f],0)/M.length).toFixed(2);
+ $('iB').innerHTML=`<div class="kv">Segment <b>${k}</b>/${G.length}</div>`+(all?`<table><tr><th>PID</th><th>Arrival</th><th>Burst</th><th>Completion</th><th>Turnaround</th><th>Waiting</th></tr>${M.map(m=>`<tr><td>${m.id}</td><td>${m.a}</td><td>${m.b}</td><td>${m.ct}</td><td>${m.tat}</td><td>${m.wt}</td></tr>`).join('')}<tr><th colspan="4">Average</th><th>${avg('tat')}</th><th>${avg('wt')}</th></tr></table>`:'<small style="color:var(--mut)">Step to the end to see waiting and turnaround times.</small>')}
+runA();
+</script></main></body></html>
